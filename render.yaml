@@ -6,7 +6,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: CONCURRENCY
-        value: "2"         # parallel browser pages; use 1 on small plans
+        value: "3"         # parallel browsers: Starter(512MB)=2, Standard(2GB)=4-5
       - key: MAX_TASKS_PER_JOB
         value: "24"
       - key: PROXY_URL     # optional, e.g. http://user:pass@host:port (Indian IP)
