@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: adshot
+    runtime: docker
+    plan: starter          # Chromium needs RAM; free (512 MB) will often crash
+    healthCheckPath: /healthz
+    envVars:
+      - key: CONCURRENCY
+        value: "2"         # parallel browser pages; use 1 on small plans
+      - key: MAX_TASKS_PER_JOB
+        value: "24"
+      - key: PROXY_URL     # optional, e.g. http://user:pass@host:port (Indian IP)
+        sync: false

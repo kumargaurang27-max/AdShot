@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AdShot – see who is advertising on Amazon & Flipkart</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#e8ecef; --panel:#ffffff; --ink:#101820; --muted:#5a6772; --line:#cfd6dc;
+  --hot:#ff2d55; --hot-ink:#ffffff; --ok:#12805c; --warn:#b26a00;
+  --font:"Schibsted Grotesk",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#12171c; --panel:#1b222a; --ink:#eef2f5; --muted:#94a1ad; --line:#2d3741; --ok:#3ccf9b; --warn:#f0a63a;}
+}
+*{box-sizing:border-box}
+html{scroll-padding-top:16px}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.5 var(--font)}
+:focus-visible{outline:3px solid var(--hot);outline-offset:2px}
+.app{display:grid;grid-template-columns:380px minmax(0,1fr);gap:24px;max-width:1400px;margin:0 auto;padding:24px}
+@media (max-width:900px){.app{grid-template-columns:1fr;padding:14px}}
+aside{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;align-self:start;position:sticky;top:24px}
+@media (max-width:900px){aside{position:static}}
+h1{font-size:34px;line-height:1.05;font-weight:800;letter-spacing:-.03em;margin:0 0 6px}
+h1 i{font-style:normal;background:var(--hot);color:var(--hot-ink);padding:0 .18em;border-radius:4px}
+.sub{color:var(--muted);margin:0 0 20px}
+label,.lbl{display:block;font-weight:600;margin:18px 0 6px}
+.hint{color:var(--muted);font-weight:400;font-size:13px}
+.chipbox{display:flex;flex-wrap:wrap;gap:6px;border:1px solid var(--line);border-radius:10px;padding:7px;background:var(--bg)}
+.chipbox:focus-within{border-color:var(--hot)}
+.chipbox input{flex:1;min-width:120px;border:0;background:transparent;font:inherit;color:inherit;padding:5px 4px;outline:none}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px 6px 3px 11px;font-size:14px}
+.chip button{border:0;background:var(--line);color:var(--ink);width:20px;height:20px;border-radius:50%;cursor:pointer;line-height:1;font-size:13px;padding:0}
+.chip button:hover{background:var(--hot);color:var(--hot-ink)}
+.quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.quick button,.seg label{font:inherit;font-size:13px;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:8px;padding:4px 10px;cursor:pointer}
+.quick button:hover{border-color:var(--hot)}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg label{margin:0;font-weight:400;display:inline-flex;gap:6px;align-items:center}
+.seg input{accent-color:var(--hot)}
+select{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.go{margin-top:22px;width:100%;font:800 17px var(--font);background:var(--hot);color:var(--hot-ink);border:0;border-radius:10px;padding:14px;cursor:pointer}
+.go:disabled{opacity:.55;cursor:wait}
+.count{color:var(--muted);font-size:13px;text-align:center;margin-top:8px;min-height:20px}
+.err{color:var(--hot);font-weight:600;margin-top:10px}
+.fine{color:var(--muted);font-size:12px;margin-top:16px}
+main h2{margin:0}
+.empty{border:2px dashed var(--line);border-radius:14px;padding:48px 24px;color:var(--muted);text-align:center}
+.empty b{display:block;color:var(--ink);font-size:20px;margin-bottom:4px}
+.bar{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+.prog{flex:1;min-width:160px;height:8px;background:var(--line);border-radius:99px;overflow:hidden}
+.prog span{display:block;height:100%;width:0;background:var(--hot);transition:width .3s}
+.dl{font:600 14px var(--font);background:var(--ink);color:var(--bg);border-radius:8px;padding:8px 14px;text-decoration:none}
+.group{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:16px}
+.group>h3{margin:0 0 12px;font-size:18px;font-weight:800;letter-spacing:-.01em}
+.group>h3 small{font-weight:400;color:var(--muted);font-size:14px;margin-left:6px}
+.cells{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
+.cell h4{margin:0 0 8px;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tag{font-size:12px;font-weight:600;border-radius:99px;padding:1px 9px;border:1px solid var(--line);color:var(--muted)}
+.tag.ok{color:var(--ok);border-color:var(--ok)} .tag.hot{background:var(--hot);border-color:var(--hot);color:var(--hot-ink)}
+.tag.bad{color:var(--hot);border-color:var(--hot)} .tag.run{color:var(--warn);border-color:var(--warn)}
+.phones{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 10px}
+.phone{flex:0 0 auto;width:150px;border:6px solid #11161b;border-radius:22px;overflow:hidden;background:#11161b;cursor:zoom-in;padding:0;display:block}
+.phone img{display:block;width:100%;height:auto;border-radius:14px}
+.ph-wait{flex:0 0 150px;height:280px;border:6px solid var(--line);border-radius:22px;display:grid;place-items:center;color:var(--muted);font-size:13px;text-align:center;padding:10px}
+.note{font-size:12px;color:var(--muted)}
+.errmsg{font-size:13px;color:var(--hot)}
+dialog{border:0;background:transparent;padding:0;max-width:96vw;max-height:96vh}
+dialog::backdrop{background:rgba(0,0,0,.8)}
+dialog img{max-height:94vh;max-width:94vw;border-radius:14px;display:block}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <h1>Ad<i>Shot</i></h1>
+  <p class="sub">Search Amazon.in and Flipkart like a shopper in any Indian city, and get phone screenshots with the sponsored spots outlined.</p>
+
+  <label for="kwIn">Keywords <span class="hint">press Enter after each</span></label>
+  <div class="chipbox" id="kwBox"><input id="kwIn" placeholder="e.g. protein powder" autocomplete="off"></div>
+
+  <label for="locIn">Cities or pincodes</label>
+  <div class="chipbox" id="locBox"><input id="locIn" list="cityList" placeholder="Mumbai or 560001" autocomplete="off"></div>
+  <datalist id="cityList"></datalist>
+  <div class="quick">
+    <button type="button" id="metros">Add top 6 metros</button>
+    <button type="button" id="clearLoc">Clear cities</button>
+  </div>
+
+  <div class="lbl">Platforms</div>
+  <div class="seg">
+    <label><input type="checkbox" name="plat" value="amazon" checked> Amazon.in</label>
+    <label><input type="checkbox" name="plat" value="flipkart" checked> Flipkart</label>
+  </div>
+
+  <div class="row" style="margin-top:6px">
+    <div><label for="dev">Phone</label>
+      <select id="dev"><option value="iphone">iPhone 13</option><option value="android">Pixel 7 (Android)</option></select></div>
+    <div><label for="scr">Screens per page</label>
+      <select id="scr"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select></div>
+  </div>
+
+  <label class="seg" style="margin-top:14px"><input type="checkbox" id="hl" checked> Outline sponsored spots in red</label>
+
+  <button class="go" id="go">Take screenshots</button>
+  <div class="count" id="count"></div>
+  <div class="err" id="err" role="alert"></div>
+  <p class="fine">Each city sets that area's delivery pincode on the site, so results match what a local shopper sees. Ad detection looks for the "Sponsored" / "Ad" label, so check the screenshots before reporting numbers.</p>
+</aside>
+
+<main>
+  <div id="out"><div class="empty"><b>No run yet</b>Add keywords and cities on the left, then take screenshots. Results appear here as each page finishes.</div></div>
+</main>
+</div>
+
+<dialog id="lb"><img id="lbImg" alt="Full size screenshot"></dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state = {keywords: [], locations: []};
+const METROS = ["Delhi","Mumbai","Bengaluru","Hyderabad","Chennai","Kolkata"];
+let timer = null;
+
+function chips(box, input, list, key) {
+  box.querySelectorAll('.chip').forEach(c => c.remove());
+  list.forEach((v, i) => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.innerHTML = `${esc(v)}<button type="button" aria-label="Remove ${esc(v)}">×</button>`;
+    c.querySelector('button').onclick = () => { list.splice(i, 1); render(); };
+    box.insertBefore(c, input);
+  });
+}
+function render() {
+  chips($('#kwBox'), $('#kwIn'), state.keywords);
+  chips($('#locBox'), $('#locIn'), state.locations);
+  const p = document.querySelectorAll('input[name=plat]:checked').length;
+  const n = state.keywords.length * state.locations.length * p;
+  $('#count').textContent = n ? `${n} screenshot set${n > 1 ? 's' : ''} will be taken` : '';
+}
+function wire(input, list) {
+  const add = raw => {
+    raw.split(/[,\n]/).map(s => s.trim()).filter(Boolean).forEach(v => {
+      if (!list.some(x => x.toLowerCase() === v.toLowerCase())) list.push(v);
+    });
+    input.value = ''; render();
+  };
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(input.value); }
+    if (e.key === 'Backspace' && !input.value && list.length) { list.pop(); render(); }
+  });
+  input.addEventListener('blur', () => input.value.trim() && add(input.value));
+  input.addEventListener('paste', e => {
+    const t = (e.clipboardData || window.clipboardData).getData('text');
+    if (/[,\n]/.test(t)) { e.preventDefault(); add(t); }
+  });
+}
+wire($('#kwIn'), state.keywords);
+wire($('#locIn'), state.locations);
+document.querySelectorAll('input[name=plat]').forEach(i => i.onchange = render);
+$('#metros').onclick = () => { METROS.forEach(m => !state.locations.includes(m) && state.locations.push(m)); render(); };
+$('#clearLoc').onclick = () => { state.locations.length = 0; render(); };
+fetch('/api/cities').then(r => r.json()).then(d => {
+  $('#cityList').innerHTML = d.cities.map(c => `<option value="${esc(c)}">`).join('');
+}).catch(() => {});
+
+$('#go').onclick = async () => {
+  $('#err').textContent = '';
+  ['#kwIn', '#locIn'].forEach(s => { const i = $(s); if (i.value.trim()) i.dispatchEvent(new Event('blur')); });
+  const platforms = [...document.querySelectorAll('input[name=plat]:checked')].map(i => i.value);
+  const body = {
+    keywords: state.keywords, locations: state.locations, platforms,
+    device: $('#dev').value, screens: +$('#scr').value, highlight: $('#hl').checked
+  };
+  $('#go').disabled = true;
+  try {
+    const r = await fetch('/api/jobs', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Could not start the run.');
+    poll(d.job_id);
+  } catch (e) {
+    $('#err').textContent = e.message;
+    $('#go').disabled = false;
+  }
+};
+
+function poll(id) {
+  clearInterval(timer);
+  const tick = async () => {
+    try {
+      const r = await fetch('/api/jobs/' + id);
+      if (!r.ok) throw new Error('Run expired. Start a new one.');
+      const j = await r.json();
+      show(j);
+      if (j.finished) { clearInterval(timer); $('#go').disabled = false; }
+    } catch (e) { clearInterval(timer); $('#err').textContent = e.message; $('#go').disabled = false; }
+  };
+  tick(); timer = setInterval(tick, 2500);
+}
+
+function cell(t) {
+  const name = t.platform === 'amazon' ? 'Amazon.in' : 'Flipkart';
+  let tag = '', body = '';
+  if (t.status === 'queued') { tag = '<span class="tag">Queued</span>'; body = '<div class="ph-wait">Waiting for a free browser</div>'; }
+  else if (t.status === 'running') { tag = '<span class="tag run">Capturing…</span>'; body = '<div class="ph-wait">Loading the search page</div>'; }
+  else if (t.status === 'error') { tag = '<span class="tag bad">Failed</span>'; body = `<div class="errmsg">${esc(t.error)}</div>`; }
+  else {
+    tag = t.ads ? `<span class="tag hot">${t.ads} sponsored spot${t.ads > 1 ? 's' : ''}</span>` : '<span class="tag ok">No sponsored label found</span>';
+    body = '<div class="phones">' + t.images.map(u => `<button class="phone" data-src="${esc(u)}" aria-label="Open full size"><img loading="lazy" src="${esc(u)}" alt="${esc(name)} results for ${esc(t.keyword)} in ${esc(t.location)}"></button>`).join('') + '</div>';
+  }
+  const note = t.note && t.status === 'done' ? `<div class="note">${esc(t.note)}</div>` : '';
+  return `<div class="cell"><h4>${name} ${tag}</h4>${body}${note}</div>`;
+}
+
+function show(j) {
+  const done = j.tasks.filter(t => t.status === 'done' || t.status === 'error').length;
+  const pct = Math.round(done / j.tasks.length * 100);
+  const groups = new Map();
+  j.tasks.forEach(t => { const k = t.keyword + '\u0000' + t.location; (groups.get(k) || groups.set(k, []).get(k)).push(t); });
+  let html = `<div class="bar"><div class="prog"><span style="width:${pct}%"></span></div><span>${done} of ${j.tasks.length} done</span>` +
+    (done ? `<a class="dl" href="/api/jobs/${j.id}/zip">Download all (ZIP)</a>` : '') + '</div>';
+  groups.forEach(ts => {
+    html += `<section class="group"><h3>${esc(ts[0].keyword)}<small>${esc(ts[0].location)} · ${esc(ts[0].pincode)}</small></h3><div class="cells">${ts.map(cell).join('')}</div></section>`;
+  });
+  $('#out').innerHTML = html;
+}
+
+$('#out').addEventListener('click', e => {
+  const b = e.target.closest('.phone');
+  if (b) { $('#lbImg').src = b.dataset.src; $('#lb').showModal(); }
+});
+$('#lb').addEventListener('click', () => $('#lb').close());
+render();
+</script>
+</body>
+</html>
