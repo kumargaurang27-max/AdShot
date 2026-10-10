@@ -9,6 +9,7 @@ import io
 import os
 import re
 import shutil
+import math
 import time
 import uuid
 import zipfile
@@ -29,11 +30,11 @@ SHOTS.mkdir(parents=True, exist_ok=True)
 
 MAX_TASKS_PER_JOB = int(os.getenv("MAX_TASKS_PER_JOB", "24"))
 MAX_ACTIVE_JOBS = int(os.getenv("MAX_ACTIVE_JOBS", "3"))
-CONCURRENCY = int(os.getenv("CONCURRENCY", "2"))
+CONCURRENCY = int(os.getenv("CONCURRENCY", "3"))
 KEEP_HOURS = float(os.getenv("KEEP_HOURS", "3"))
-BRAND_SAMPLES = int(os.getenv("BRAND_SAMPLES", "4"))          # looks per screen when a banner carousel is visible
-BRAND_INTERVAL_MS = int(os.getenv("BRAND_INTERVAL_MS", "1600"))  # wait between looks
-OCR_MAX = int(os.getenv("OCR_MAX", "6"))                      # max banners read by OCR per look
+BRAND_SAMPLES = int(os.getenv("BRAND_SAMPLES", "3"))          # looks per screen when a banner carousel is visible
+BRAND_INTERVAL_MS = int(os.getenv("BRAND_INTERVAL_MS", "1400"))  # wait between looks
+OCR_MAX = int(os.getenv("OCR_MAX", "3"))                      # max banners read by OCR per look
 PROXY_URL = os.getenv("PROXY_URL", "").strip()  # e.g. http://user:pass@host:port (Indian IP recommended)
 
 # city -> (pincode, lat, lng)
@@ -127,6 +128,7 @@ class JobRequest(BaseModel):
     screens: int = 5
     highlight: bool = True
     brands: list[str] = []  # focus brand(s): keep only screens showing their ad
+    fast: bool = False      # one look per screen (skip waiting for rotating banners)
 
 
 def resolve_location(raw: str) -> dict:
@@ -247,66 +249,77 @@ async def scroll_step(page, dy: int) -> bool:
         await page.mouse.wheel(0, dy)
     except Exception:
         pass
-    await page.wait_for_timeout(900)
+    await page.wait_for_timeout(650)
     if await page.evaluate(POS_JS) != before:
         return True
     await page.evaluate(SCROLLBY_JS, dy)
-    await page.wait_for_timeout(900)
+    await page.wait_for_timeout(650)
     return (await page.evaluate(POS_JS)) != before
 
 
-async def amazon_flow(page, kw: str, loc: dict) -> str:
+async def amazon_setup(page, loc: dict) -> str:
+    """Runs once per (city, platform): open the site and set the delivery pincode."""
     await page.goto("https://www.amazon.in/", wait_until="domcontentloaded", timeout=45000)
-    await page.wait_for_timeout(1500)
-    note = "pincode set"
+    await page.wait_for_timeout(1000)
     try:
         await page.locator(
             "#nav-global-location-popover-link, #glow-ingress-block, #nav-global-location-slot"
-        ).first.click(timeout=8000)
-        await page.locator("#GLUXZipUpdateInput").fill(loc["pincode"], timeout=8000)
-        await page.locator("#GLUXZipUpdate input[type=submit], #GLUXZipUpdate").first.click(timeout=5000)
-        await page.wait_for_timeout(1500)
+        ).first.click(timeout=5000)
+        await page.locator("#GLUXZipUpdateInput").fill(loc["pincode"], timeout=5000)
+        await page.locator("#GLUXZipUpdate input[type=submit], #GLUXZipUpdate").first.click(timeout=4000)
+        await page.wait_for_timeout(1200)
         done = page.locator("button[name='glowDoneButton'], #GLUXConfirmClose, .a-popover-footer button")
         if await done.count():
-            await done.first.click(timeout=3000)
-        await page.wait_for_timeout(800)
+            await done.first.click(timeout=2500)
+        await page.wait_for_timeout(500)
+        return "pincode set"
     except Exception:
-        note = "could not set pincode (showing default location)"
+        return "could not set pincode (showing default location)"
+
+
+async def amazon_search(page, kw: str):
     await page.goto(
         f"https://www.amazon.in/s?k={quote_plus(kw)}", wait_until="domcontentloaded", timeout=45000
     )
-    return note
 
 
-async def flipkart_flow(page, kw: str, loc: dict) -> str:
-    await page.goto(
-        f"https://www.flipkart.com/search?q={quote_plus(kw)}",
-        wait_until="domcontentloaded",
-        timeout=45000,
-    )
-    await page.wait_for_timeout(2000)
-    try:  # dismiss login popup if any
+async def flipkart_setup(page, loc: dict) -> str:
+    """Runs once per (city, platform)."""
+    await page.goto("https://www.flipkart.com/", wait_until="domcontentloaded", timeout=45000)
+    await page.wait_for_timeout(1000)
+    try:
         await page.keyboard.press("Escape")
-        close = page.locator("button:has-text('✕')")
-        if await close.count():
-            await close.first.click(timeout=2000)
     except Exception:
         pass
-    note = "pincode set"
     try:
         try:
-            await page.get_by_text(re.compile(r"pincode|deliver to", re.I)).first.click(timeout=4000)
+            await page.get_by_text(re.compile(r"pincode|deliver to", re.I)).first.click(timeout=2500)
         except Exception:
             pass
         box = page.locator(
             "input[placeholder*='pincode' i], input[name='pincode'], input[maxlength='6']"
         ).first
-        await box.fill(loc["pincode"], timeout=4000)
+        await box.fill(loc["pincode"], timeout=2500)
         await box.press("Enter")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1500)
+        return "pincode set"
     except Exception:
-        note = "could not set pincode (showing default location)"
-    return note
+        return "could not set pincode (showing default location)"
+
+
+async def flipkart_search(page, kw: str):
+    await page.goto(
+        f"https://www.flipkart.com/search?q={quote_plus(kw)}",
+        wait_until="domcontentloaded",
+        timeout=45000,
+    )
+    try:  # dismiss login popup if any
+        await page.keyboard.press("Escape")
+        close = page.locator("button:has-text('✕')")
+        if await close.count():
+            await close.first.click(timeout=1500)
+    except Exception:
+        pass
 
 
 def _norm(t: str) -> str:
@@ -363,7 +376,7 @@ async def find_brand_hits(page, res: dict, brands: list, highlight: bool, dpr: f
         hits.update(c["hits"])
     if hits:
         return hits
-    todo = [c for c in res["visible"] if c["box"][2] >= 120 and c["box"][3] >= 50][:OCR_MAX]
+    todo = [c for c in res["visible"] if c["box"][2] >= 250 and c["box"][3] >= 50][:OCR_MAX]
     if not todo:
         return hits
     png = await page.screenshot(type="png")
@@ -377,8 +390,12 @@ async def find_brand_hits(page, res: dict, brands: list, highlight: bool, dpr: f
     return hits
 
 
-async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, brands: list):
-    await page.wait_for_timeout(2500)
+async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, brands: list, fast: bool = False):
+    try:
+        await page.wait_for_load_state("networkidle", timeout=4000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(500)
     title = (await page.title() or "").lower()
     body = (await page.content()).lower()
     if "robot check" in title or "captcha" in body or "enter the characters you see" in body:
@@ -392,7 +409,7 @@ async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, b
     for i in range(screens):
         if i > 0 and not await scroll_step(page, step):
             break  # reached the end of the page
-        await page.wait_for_timeout(700)
+        await page.wait_for_timeout(400)
         hits: set = set()
         looks = 0
         while True:
@@ -403,7 +420,7 @@ async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, b
             hits = await find_brand_hits(page, res, brands, highlight, dpr, cache)
             looks += 1
             has_banner = any(c["w"] >= 300 for c in res["visible"])  # banners may be carousels
-            if hits or not has_banner or looks >= BRAND_SAMPLES:
+            if hits or not has_banner or looks >= (1 if fast else BRAND_SAMPLES):
                 break
             await page.wait_for_timeout(BRAND_INTERVAL_MS)  # wait for the carousel to rotate
         if brands and not hits:
@@ -427,9 +444,10 @@ async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, b
         task["images"].append(f"/shots/{jdir.name}/{name}")
 
 
-async def run_task(job: dict, task: dict, loc: dict):
+async def run_unit(job: dict, platform: str, loc: dict, tasks: list):
+    """One browser context = one city on one platform. The pincode is set once,
+    then every keyword in this unit reuses it."""
     async with SEM:
-        task["status"] = "running"
         ctx = None
         try:
             browser = await get_browser()
@@ -448,22 +466,52 @@ async def run_task(job: dict, task: dict, loc: dict):
             await ctx.add_init_script(
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
             )
+            await ctx.route("**/*.{woff,woff2,ttf,otf,mp4,webm}", lambda r: r.abort())
             page = await ctx.new_page()
             page.set_default_timeout(20000)
-            flow = amazon_flow if task["platform"] == "amazon" else flipkart_flow
-            task["note"] = await flow(page, task["keyword"], loc)
-            await capture(page, SHOTS / job["id"], task, job["highlight"], job["screens"], job["brands"])
-            task["status"] = "done"
+            setup = amazon_setup if platform == "amazon" else flipkart_setup
+            search = amazon_search if platform == "amazon" else flipkart_search
+            note = await setup(page, loc)
         except Exception as e:  # noqa: BLE001
-            task["status"] = "error"
-            task["error"] = str(e).split("\n")[0][:220]
-        finally:
+            for t in tasks:
+                t["status"] = "error"
+                t["error"] = str(e).split("\n")[0][:220]
             if ctx:
                 await ctx.close()
+            return
+
+        for t in tasks:
+            t["status"] = "running"
+            try:
+                if page.is_closed():
+                    page = await ctx.new_page()
+                    page.set_default_timeout(20000)
+                t["note"] = note
+                await search(page, t["keyword"])
+                await capture(page, SHOTS / job["id"], t, job["highlight"], job["screens"],
+                              job["brands"], job["fast"])
+                t["status"] = "done"
+            except Exception as e:  # noqa: BLE001
+                t["status"] = "error"
+                t["error"] = str(e).split("\n")[0][:220]
+        await ctx.close()
 
 
 async def run_job(job: dict, locs: dict):
-    await asyncio.gather(*(run_task(job, t, locs[t["location"]]) for t in job["tasks"]))
+    groups: dict = {}
+    for t in job["tasks"]:
+        groups.setdefault((t["platform"], t["location"]), []).append(t)
+    # If there are fewer city/platform groups than browser slots, split keywords
+    # across extra workers so every slot is used.
+    split = max(1, math.ceil(CONCURRENCY / len(groups)))
+    units = []
+    for (platform, label), ts in groups.items():
+        n = min(split, len(ts))
+        for k in range(n):
+            chunk = ts[k::n]
+            if chunk:
+                units.append(run_unit(job, platform, locs[label], chunk))
+    await asyncio.gather(*units)
     job["finished"] = True
 
 
@@ -509,7 +557,7 @@ async def create_job(req: JobRequest):
                     "brands": brands, "brand_found": [],
                 })
     job = {"id": jid, "created": time.time(), "finished": False, "device": req.device,
-           "screens": screens, "highlight": req.highlight, "brands": brands, "tasks": tasks}
+           "screens": screens, "highlight": req.highlight, "brands": brands, "fast": req.fast, "tasks": tasks}
     JOBS[jid] = job
     asyncio.create_task(run_job(job, locs))
     return {"job_id": jid, "total": total}
