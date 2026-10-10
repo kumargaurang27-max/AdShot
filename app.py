@@ -119,8 +119,9 @@ class JobRequest(BaseModel):
     locations: list[str]  # city names or 6-digit pincodes
     platforms: list[str] = ["amazon", "flipkart"]
     device: str = "iphone"
-    screens: int = 2
+    screens: int = 5
     highlight: bool = True
+    brands: list[str] = []  # focus brand(s): keep only screens showing their ad
 
 
 def resolve_location(raw: str) -> dict:
@@ -140,7 +141,9 @@ def slug(s: str) -> str:
 
 # ---------------------------------------------------------- page behaviour ---
 HIGHLIGHT_JS = """
-(hl) => {
+({hl, brands}) => {
+  const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const B = brands.map(b => [b, norm(b)]).filter(x => x[1]);
   const ok = new Set(['sponsored','ad','ads','advertisement','sponsored brand']);
   const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let n;
@@ -159,11 +162,82 @@ HIGHLIGHT_JS = """
     }
     if (c.hasAttribute('data-adshot')) continue;
     c.setAttribute('data-adshot', '1');
-    if (hl) { c.style.outline = '3px solid #ff2d55'; c.style.outlineOffset = '-3px'; }
+    let hay = c.innerText || '';
+    c.querySelectorAll('img[alt],[aria-label],[title],a[href]').forEach(e => {
+      hay += ' ' + (e.getAttribute('alt') || '') + ' ' + (e.getAttribute('aria-label') || '') +
+             ' ' + (e.getAttribute('title') || '') + ' ' + (e.getAttribute('href') || '');
+    });
+    const h = norm(hay);
+    const hit = B.filter(([b, nb]) => h.includes(nb)).map(x => x[0]);
+    if (hit.length) c.setAttribute('data-adbrand', hit.join('|'));
+    if (hl) {
+      c.style.outline = hit.length ? '5px solid #00c853' : '3px solid #ff2d55';
+      c.style.outlineOffset = '-3px';
+    }
   }
-  return document.querySelectorAll('[data-adshot]').length;
+  const vh = window.innerHeight, vis = new Set(), found = new Set();
+  document.querySelectorAll('[data-adbrand]').forEach(e => {
+    const names = e.getAttribute('data-adbrand').split('|');
+    names.forEach(x => found.add(x));
+    const r = e.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0 && r.bottom > 40 && r.top < vh - 40) names.forEach(x => vis.add(x));
+  });
+  return {ads: document.querySelectorAll('[data-adshot]').length, visible: [...vis], found: [...found]};
 }
 """
+
+# Position of the page (window + biggest inner scroller), so we can tell if scrolling worked.
+POS_JS = """
+() => {
+  let inner = 0;
+  document.querySelectorAll('div,main,section').forEach(e => {
+    if (e.scrollHeight - e.clientHeight > 200) {
+      const o = getComputedStyle(e).overflowY;
+      if ((o === 'auto' || o === 'scroll') && e.scrollTop > inner) inner = e.scrollTop;
+    }
+  });
+  return Math.round(window.scrollY) + ':' + Math.round(inner);
+}
+"""
+
+SCROLLBY_JS = """
+(dy) => {
+  window.scrollBy(0, dy);
+  let best = null, bestRoom = 0;
+  document.querySelectorAll('div,main,section').forEach(e => {
+    const o = getComputedStyle(e).overflowY;
+    const room = e.scrollHeight - e.clientHeight;
+    if (room > 200 && (o === 'auto' || o === 'scroll') &&
+        e.clientHeight > window.innerHeight * 0.5 && room > bestRoom) { best = e; bestRoom = room; }
+  });
+  if (best) best.scrollBy(0, dy);
+}
+"""
+
+TOP_JS = """
+() => {
+  window.scrollTo(0, 0);
+  document.querySelectorAll('div,main,section').forEach(e => { if (e.scrollTop > 0) e.scrollTop = 0; });
+}
+"""
+
+
+async def scroll_step(page, dy: int) -> bool:
+    """Scroll down one screen. Works for window scrolling and inner scroll containers.
+    Returns False when the page cannot scroll any further."""
+    before = await page.evaluate(POS_JS)
+    vp = page.viewport_size
+    try:
+        await page.mouse.move(vp["width"] / 2, vp["height"] / 2)
+        await page.mouse.wheel(0, dy)
+    except Exception:
+        pass
+    await page.wait_for_timeout(900)
+    if await page.evaluate(POS_JS) != before:
+        return True
+    await page.evaluate(SCROLLBY_JS, dy)
+    await page.wait_for_timeout(900)
+    return (await page.evaluate(POS_JS)) != before
 
 
 async def amazon_flow(page, kw: str, loc: dict) -> str:
@@ -220,7 +294,7 @@ async def flipkart_flow(page, kw: str, loc: dict) -> str:
     return note
 
 
-async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int):
+async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, brands: list):
     await page.wait_for_timeout(2500)
     title = (await page.title() or "").lower()
     body = (await page.content()).lower()
@@ -228,15 +302,30 @@ async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int):
         raise RuntimeError("Blocked by a bot check (CAPTCHA). Use an Indian proxy via PROXY_URL.")
 
     vh = page.viewport_size["height"]
-    ads = 0
+    step = int(vh * 0.8)
+    saved = 0
+    res = {"ads": 0, "found": [], "visible": []}
     for i in range(screens):
-        await page.evaluate("y => window.scrollTo(0, y)", int(i * vh * 0.85))
-        await page.wait_for_timeout(1000)
-        ads = await page.evaluate(HIGHLIGHT_JS, highlight)
-        name = f"{task['id']}_{i + 1}.jpg"
+        if i > 0 and not await scroll_step(page, step):
+            break  # reached the end of the page
+        await page.wait_for_timeout(700)
+        res = await page.evaluate(HIGHLIGHT_JS, {"hl": highlight, "brands": brands})
+        if brands and not res["visible"]:
+            continue  # focus-brand mode: skip screens without the brand's ad
+        saved += 1
+        name = f"{task['id']}_{saved}.jpg"
         await page.screenshot(path=str(jdir / name), type="jpeg", quality=82)
         task["images"].append(f"/shots/{jdir.name}/{name}")
-    task["ads"] = ads
+
+    task["ads"] = res["ads"]
+    task["brands"] = brands
+    task["brand_found"] = res["found"]
+    if brands and not saved:  # keep one top-of-page shot as proof the brand ad was not there
+        await page.evaluate(TOP_JS)
+        await page.wait_for_timeout(800)
+        name = f"{task['id']}_brand-not-found.jpg"
+        await page.screenshot(path=str(jdir / name), type="jpeg", quality=82)
+        task["images"].append(f"/shots/{jdir.name}/{name}")
 
 
 async def run_task(job: dict, task: dict, loc: dict):
@@ -264,7 +353,7 @@ async def run_task(job: dict, task: dict, loc: dict):
             page.set_default_timeout(20000)
             flow = amazon_flow if task["platform"] == "amazon" else flipkart_flow
             task["note"] = await flow(page, task["keyword"], loc)
-            await capture(page, SHOTS / job["id"], task, job["highlight"], job["screens"])
+            await capture(page, SHOTS / job["id"], task, job["highlight"], job["screens"], job["brands"])
             task["status"] = "done"
         except Exception as e:  # noqa: BLE001
             task["status"] = "error"
@@ -288,7 +377,8 @@ async def create_job(req: JobRequest):
         raise HTTPException(400, "Add at least one keyword, one city or pincode, and one platform.")
     if req.device not in DEVICES:
         raise HTTPException(400, "Unknown device.")
-    screens = max(1, min(5, req.screens))
+    screens = max(1, min(10, req.screens))
+    brands = list(dict.fromkeys(b.strip() for b in req.brands if b.strip()))[:5]
 
     locs = {}
     try:
@@ -317,9 +407,10 @@ async def create_job(req: JobRequest):
                     "platform": p, "keyword": kw, "location": label,
                     "pincode": locs[label]["pincode"],
                     "status": "queued", "images": [], "ads": 0, "note": "", "error": "",
+                    "brands": brands, "brand_found": [],
                 })
     job = {"id": jid, "created": time.time(), "finished": False, "device": req.device,
-           "screens": screens, "highlight": req.highlight, "tasks": tasks}
+           "screens": screens, "highlight": req.highlight, "brands": brands, "tasks": tasks}
     JOBS[jid] = job
     asyncio.create_task(run_job(job, locs))
     return {"job_id": jid, "total": total}
