@@ -4,6 +4,7 @@ for many keywords x many Indian cities/pincodes, with sponsored (brand ad)
 placements outlined.
 """
 import asyncio
+import hashlib
 import io
 import os
 import re
@@ -12,6 +13,7 @@ import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -29,6 +31,9 @@ MAX_TASKS_PER_JOB = int(os.getenv("MAX_TASKS_PER_JOB", "24"))
 MAX_ACTIVE_JOBS = int(os.getenv("MAX_ACTIVE_JOBS", "3"))
 CONCURRENCY = int(os.getenv("CONCURRENCY", "2"))
 KEEP_HOURS = float(os.getenv("KEEP_HOURS", "3"))
+BRAND_SAMPLES = int(os.getenv("BRAND_SAMPLES", "4"))          # looks per screen when a banner carousel is visible
+BRAND_INTERVAL_MS = int(os.getenv("BRAND_INTERVAL_MS", "1600"))  # wait between looks
+OCR_MAX = int(os.getenv("OCR_MAX", "6"))                      # max banners read by OCR per look
 PROXY_URL = os.getenv("PROXY_URL", "").strip()  # e.g. http://user:pass@host:port (Indian IP recommended)
 
 # city -> (pincode, lat, lng)
@@ -145,6 +150,7 @@ HIGHLIGHT_JS = """
   const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   const B = brands.map(b => [b, norm(b)]).filter(x => x[1]);
   const ok = new Set(['sponsored','ad','ads','advertisement','sponsored brand']);
+  let uid = window.__adid || 0;
   const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let n;
   while ((n = w.nextNode())) {
@@ -157,32 +163,41 @@ HIGHLIGHT_JS = """
     let c = el;
     for (let i = 0; i < 8 && c.parentElement && c.parentElement !== document.body; i++) {
       const r = c.getBoundingClientRect();
-      if (r.width >= 140 && r.height >= 140) break;
+      if ((r.width >= 140 && r.height >= 140) || (r.width >= 300 && r.height >= 80)) break;
       c = c.parentElement;
     }
     if (c.hasAttribute('data-adshot')) continue;
     c.setAttribute('data-adshot', '1');
-    let hay = c.innerText || '';
-    c.querySelectorAll('img[alt],[aria-label],[title],a[href]').forEach(e => {
-      hay += ' ' + (e.getAttribute('alt') || '') + ' ' + (e.getAttribute('aria-label') || '') +
-             ' ' + (e.getAttribute('title') || '') + ' ' + (e.getAttribute('href') || '');
+    c.setAttribute('data-adid', String(++uid));
+  }
+  window.__adid = uid;
+  const vh = window.innerHeight, vw = window.innerWidth, out = [];
+  document.querySelectorAll('[data-adshot]').forEach(e => {
+    const r = e.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0 || r.bottom <= 40 || r.top >= vh - 40) return;
+    let hay = e.innerText || '';
+    e.querySelectorAll('img[alt],[aria-label],[title],a[href]').forEach(x => {
+      hay += ' ' + (x.getAttribute('alt') || '') + ' ' + (x.getAttribute('aria-label') || '') +
+             ' ' + (x.getAttribute('title') || '') + ' ' + (x.getAttribute('href') || '');
     });
     const h = norm(hay);
-    const hit = B.filter(([b, nb]) => h.includes(nb)).map(x => x[0]);
-    if (hit.length) c.setAttribute('data-adbrand', hit.join('|'));
+    const hits = B.filter(([b, nb]) => h.includes(nb)).map(x => x[0]);
     if (hl) {
-      c.style.outline = hit.length ? '5px solid #00c853' : '3px solid #ff2d55';
-      c.style.outlineOffset = '-3px';
+      e.style.outline = hits.length ? '5px solid #00c853' : '3px solid #ff2d55';
+      e.style.outlineOffset = '-3px';
     }
-  }
-  const vh = window.innerHeight, vis = new Set(), found = new Set();
-  document.querySelectorAll('[data-adbrand]').forEach(e => {
-    const names = e.getAttribute('data-adbrand').split('|');
-    names.forEach(x => found.add(x));
-    const r = e.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0 && r.bottom > 40 && r.top < vh - 40) names.forEach(x => vis.add(x));
+    const x0 = Math.max(0, r.left), y0 = Math.max(0, r.top);
+    out.push({id: e.getAttribute('data-adid'), w: Math.round(r.width), hits,
+              box: [x0, y0, Math.min(r.right, vw) - x0, Math.min(r.bottom, vh) - y0]});
   });
-  return {ads: document.querySelectorAll('[data-adshot]').length, visible: [...vis], found: [...found]};
+  return {total: document.querySelectorAll('[data-adshot]').length, visible: out};
+}
+"""
+
+MARK_BRAND_JS = """
+(id) => {
+  const e = document.querySelector('[data-adid="' + id + '"]');
+  if (e) { e.style.outline = '5px solid #00c853'; e.style.outlineOffset = '-3px'; }
 }
 """
 
@@ -294,6 +309,74 @@ async def flipkart_flow(page, kw: str, loc: dict) -> str:
     return note
 
 
+def _norm(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", t.lower())
+
+
+def fuzzy_has(text: str, brand: str) -> bool:
+    """Does OCR text contain the brand (tolerating small OCR slips)?"""
+    nb = _norm(brand)
+    if not nb:
+        return False
+    if nb in _norm(text):
+        return True
+    if len(nb) < 5:
+        return False
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    cands = words + [a + b for a, b in zip(words, words[1:])]
+    return any(
+        abs(len(c) - len(nb)) <= 2 and SequenceMatcher(None, nb, c).ratio() >= 0.78 for c in cands
+    )
+
+
+OCR_STATE = {"ok": True}
+
+
+def ocr_crop(png: bytes, box, dpr: float, cache: dict, key_id: str) -> str:
+    """Read the text inside one ad banner (cropped from a viewport screenshot)."""
+    try:
+        from PIL import Image, ImageOps
+        import pytesseract
+        im = Image.open(io.BytesIO(png)).convert("RGB")
+        x, y, w, h = [int(v * dpr) for v in box]
+        im = im.crop((max(0, x), max(0, y), min(im.width, x + w), min(im.height, y + h)))
+        if im.width < 4 or im.height < 4:
+            return ""
+        key = (key_id, hashlib.md5(im.tobytes()).hexdigest())
+        if key in cache:
+            return cache[key]
+        if im.width < 1000:
+            im = im.resize((im.width * 2, im.height * 2))
+        im = ImageOps.autocontrast(ImageOps.grayscale(im))
+        text = pytesseract.image_to_string(im, config="--psm 11")
+        cache[key] = text
+        return text
+    except Exception:
+        OCR_STATE["ok"] = False
+        return ""
+
+
+async def find_brand_hits(page, res: dict, brands: list, highlight: bool, dpr: float, cache: dict) -> set:
+    """Brands whose ad is visible right now: first from page text, then by reading banner images."""
+    hits = set()
+    for c in res["visible"]:
+        hits.update(c["hits"])
+    if hits:
+        return hits
+    todo = [c for c in res["visible"] if c["box"][2] >= 120 and c["box"][3] >= 50][:OCR_MAX]
+    if not todo:
+        return hits
+    png = await page.screenshot(type="png")
+    for c in todo:
+        text = await asyncio.to_thread(ocr_crop, png, c["box"], dpr, cache, c["id"])
+        got = [b for b in brands if fuzzy_has(text, b)]
+        if got:
+            hits.update(got)
+            if highlight:
+                await page.evaluate(MARK_BRAND_JS, c["id"])
+    return hits
+
+
 async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, brands: list):
     await page.wait_for_timeout(2500)
     title = (await page.title() or "").lower()
@@ -303,23 +386,39 @@ async def capture(page, jdir: Path, task: dict, highlight: bool, screens: int, b
 
     vh = page.viewport_size["height"]
     step = int(vh * 0.8)
-    saved = 0
-    res = {"ads": 0, "found": [], "visible": []}
+    dpr = float(await page.evaluate("window.devicePixelRatio") or 1)
+    cache: dict = {}
+    saved, total, found = 0, 0, set()
     for i in range(screens):
         if i > 0 and not await scroll_step(page, step):
             break  # reached the end of the page
         await page.wait_for_timeout(700)
-        res = await page.evaluate(HIGHLIGHT_JS, {"hl": highlight, "brands": brands})
-        if brands and not res["visible"]:
+        hits: set = set()
+        looks = 0
+        while True:
+            res = await page.evaluate(HIGHLIGHT_JS, {"hl": highlight, "brands": brands})
+            total = res["total"]
+            if not brands:
+                break
+            hits = await find_brand_hits(page, res, brands, highlight, dpr, cache)
+            looks += 1
+            has_banner = any(c["w"] >= 300 for c in res["visible"])  # banners may be carousels
+            if hits or not has_banner or looks >= BRAND_SAMPLES:
+                break
+            await page.wait_for_timeout(BRAND_INTERVAL_MS)  # wait for the carousel to rotate
+        if brands and not hits:
             continue  # focus-brand mode: skip screens without the brand's ad
+        found |= hits
         saved += 1
         name = f"{task['id']}_{saved}.jpg"
         await page.screenshot(path=str(jdir / name), type="jpeg", quality=82)
         task["images"].append(f"/shots/{jdir.name}/{name}")
 
-    task["ads"] = res["ads"]
+    task["ads"] = total
     task["brands"] = brands
-    task["brand_found"] = res["found"]
+    task["brand_found"] = sorted(found)
+    if brands and not OCR_STATE["ok"]:
+        task["note"] = (task.get("note", "") + " | banner-image reading (OCR) unavailable on this server").strip(" |")
     if brands and not saved:  # keep one top-of-page shot as proof the brand ad was not there
         await page.evaluate(TOP_JS)
         await page.wait_for_timeout(800)
