@@ -62,6 +62,7 @@ main h2{margin:0}
 .cell h4{margin:0 0 8px;font-size:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .tag{font-size:12px;font-weight:600;border-radius:99px;padding:1px 9px;border:1px solid var(--line);color:var(--muted)}
 .tag.ok{color:var(--ok);border-color:var(--ok)} .tag.hot{background:var(--hot);border-color:var(--hot);color:var(--hot-ink)}
+.tag.brand{background:#00c853;border-color:#00c853;color:#05210f}
 .tag.bad{color:var(--hot);border-color:var(--hot)} .tag.run{color:var(--warn);border-color:var(--warn)}
 .phones{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 10px}
 .phone{flex:0 0 auto;width:150px;border:6px solid #11161b;border-radius:22px;overflow:hidden;background:#11161b;cursor:zoom-in;padding:0;display:block}
@@ -92,6 +93,10 @@ dialog img{max-height:94vh;max-width:94vw;border-radius:14px;display:block}
     <button type="button" id="clearLoc">Clear cities</button>
   </div>
 
+  <label for="brIn">Focus brand <span class="hint">optional</span></label>
+  <div class="chipbox" id="brBox"><input id="brIn" placeholder="e.g. Mamaearth" autocomplete="off"></div>
+  <div class="hint" style="margin-top:6px">Keeps only the screens where this brand's sponsored ad is visible, outlined in green. If it never shows, you get one top-of-page screenshot as proof.</div>
+
   <div class="lbl">Platforms</div>
   <div class="seg">
     <label><input type="checkbox" name="plat" value="amazon" checked> Amazon.in</label>
@@ -101,8 +106,8 @@ dialog img{max-height:94vh;max-width:94vw;border-radius:14px;display:block}
   <div class="row" style="margin-top:6px">
     <div><label for="dev">Phone</label>
       <select id="dev"><option value="iphone">iPhone 13</option><option value="android">Pixel 7 (Android)</option></select></div>
-    <div><label for="scr">Screens per page</label>
-      <select id="scr"><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option></select></div>
+    <div><label for="scr">Screens to scan</label>
+      <select id="scr"><option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option><option>6</option><option>8</option><option>10</option></select></div>
   </div>
 
   <label class="seg" style="margin-top:14px"><input type="checkbox" id="hl" checked> Outline sponsored spots in red</label>
@@ -123,7 +128,7 @@ dialog img{max-height:94vh;max-width:94vw;border-radius:14px;display:block}
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const state = {keywords: [], locations: []};
+const state = {keywords: [], locations: [], brands: []};
 const METROS = ["Delhi","Mumbai","Bengaluru","Hyderabad","Chennai","Kolkata"];
 let timer = null;
 
@@ -140,6 +145,7 @@ function chips(box, input, list, key) {
 function render() {
   chips($('#kwBox'), $('#kwIn'), state.keywords);
   chips($('#locBox'), $('#locIn'), state.locations);
+  chips($('#brBox'), $('#brIn'), state.brands);
   const p = document.querySelectorAll('input[name=plat]:checked').length;
   const n = state.keywords.length * state.locations.length * p;
   $('#count').textContent = n ? `${n} screenshot set${n > 1 ? 's' : ''} will be taken` : '';
@@ -163,6 +169,7 @@ function wire(input, list) {
 }
 wire($('#kwIn'), state.keywords);
 wire($('#locIn'), state.locations);
+wire($('#brIn'), state.brands);
 document.querySelectorAll('input[name=plat]').forEach(i => i.onchange = render);
 $('#metros').onclick = () => { METROS.forEach(m => !state.locations.includes(m) && state.locations.push(m)); render(); };
 $('#clearLoc').onclick = () => { state.locations.length = 0; render(); };
@@ -172,10 +179,10 @@ fetch('/api/cities').then(r => r.json()).then(d => {
 
 $('#go').onclick = async () => {
   $('#err').textContent = '';
-  ['#kwIn', '#locIn'].forEach(s => { const i = $(s); if (i.value.trim()) i.dispatchEvent(new Event('blur')); });
+  ['#kwIn', '#locIn', '#brIn'].forEach(s => { const i = $(s); if (i.value.trim()) i.dispatchEvent(new Event('blur')); });
   const platforms = [...document.querySelectorAll('input[name=plat]:checked')].map(i => i.value);
   const body = {
-    keywords: state.keywords, locations: state.locations, platforms,
+    keywords: state.keywords, locations: state.locations, brands: state.brands, platforms,
     device: $('#dev').value, screens: +$('#scr').value, highlight: $('#hl').checked
   };
   $('#go').disabled = true;
@@ -211,7 +218,15 @@ function cell(t) {
   else if (t.status === 'running') { tag = '<span class="tag run">Capturing…</span>'; body = '<div class="ph-wait">Loading the search page</div>'; }
   else if (t.status === 'error') { tag = '<span class="tag bad">Failed</span>'; body = `<div class="errmsg">${esc(t.error)}</div>`; }
   else {
-    tag = t.ads ? `<span class="tag hot">${t.ads} sponsored spot${t.ads > 1 ? 's' : ''}</span>` : '<span class="tag ok">No sponsored label found</span>';
+    if (t.brands && t.brands.length) {
+      const hit = t.brand_found || [];
+      const miss = t.brands.filter(b => !hit.includes(b));
+      tag = hit.length ? `<span class="tag brand">${esc(hit.join(', '))} ad found</span>` : '';
+      if (miss.length) tag += `<span class="tag bad">${esc(miss.join(', '))} ad not found</span>`;
+      tag += `<span class="tag">${t.ads} sponsored in total</span>`;
+    } else {
+      tag = t.ads ? `<span class="tag hot">${t.ads} sponsored spot${t.ads > 1 ? 's' : ''}</span>` : '<span class="tag ok">No sponsored label found</span>';
+    }
     body = '<div class="phones">' + t.images.map(u => `<button class="phone" data-src="${esc(u)}" aria-label="Open full size"><img loading="lazy" src="${esc(u)}" alt="${esc(name)} results for ${esc(t.keyword)} in ${esc(t.location)}"></button>`).join('') + '</div>';
   }
   const note = t.note && t.status === 'done' ? `<div class="note">${esc(t.note)}</div>` : '';
@@ -226,7 +241,7 @@ function show(j) {
   let html = `<div class="bar"><div class="prog"><span style="width:${pct}%"></span></div><span>${done} of ${j.tasks.length} done</span>` +
     (done ? `<a class="dl" href="/api/jobs/${j.id}/zip">Download all (ZIP)</a>` : '') + '</div>';
   groups.forEach(ts => {
-    html += `<section class="group"><h3>${esc(ts[0].keyword)}<small>${esc(ts[0].location)} · ${esc(ts[0].pincode)}</small></h3><div class="cells">${ts.map(cell).join('')}</div></section>`;
+    html += `<section class="group"><h3>${esc(ts[0].keyword)}<small>${ts[0].location === ts[0].pincode ? 'Pincode ' + esc(ts[0].pincode) : esc(ts[0].location) + ' · ' + esc(ts[0].pincode)}</small></h3><div class="cells">${ts.map(cell).join('')}</div></section>`;
   });
   $('#out').innerHTML = html;
 }
