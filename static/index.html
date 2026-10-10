@@ -111,6 +111,7 @@ dialog img{max-height:94vh;max-width:94vw;border-radius:14px;display:block}
   </div>
 
   <label class="seg" style="margin-top:14px"><input type="checkbox" id="hl" checked> Outline sponsored spots in red</label>
+  <label class="seg" style="margin-top:8px"><input type="checkbox" id="fast"> Fast mode <span class="hint">(skips waiting for rotating banners)</span></label>
 
   <button class="go" id="go">Take screenshots</button>
   <div class="count" id="count"></div>
@@ -183,7 +184,7 @@ $('#go').onclick = async () => {
   const platforms = [...document.querySelectorAll('input[name=plat]:checked')].map(i => i.value);
   const body = {
     keywords: state.keywords, locations: state.locations, brands: state.brands, platforms,
-    device: $('#dev').value, screens: +$('#scr').value, highlight: $('#hl').checked
+    device: $('#dev').value, screens: +$('#scr').value, highlight: $('#hl').checked, fast: $('#fast').checked
   };
   $('#go').disabled = true;
   try {
